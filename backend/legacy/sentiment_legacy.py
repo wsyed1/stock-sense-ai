@@ -109,7 +109,7 @@ def analyse_stock_news(user_input):
                         "ticker": {"type": "string", "description": "Symbol used to represent the stock"},
                         "stock_name": {"type": "string", "description": "Full name of the stock"},
                         "sentiment_score": {"type": "integer", "description": "Score between 1-100 of the sentiment"},
-                        "recommendation": {"type": "string", "description": "Choose between Buy, Strong Buy and Do Not Buy to recommend suggestion for buying stock"},
+                        "recommendation": {"type": "string", "description": "Choose between Strongly Bullish, Bullish, Neutral and Bearish to recommend suggestion for buying stock"},
                         "reason": {"type": "string", "description": "Provide reasons for the recommendation and the sentiment_score"},
                         "source": {"type": "string", "description": "Quote the source or web url link for the reason and recommendation"},
                     },
