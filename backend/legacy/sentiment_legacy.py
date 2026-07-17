@@ -8,6 +8,16 @@ import os
 
 app = Flask(__name__)
 
+# Enable CORS so the frontend (served from a different origin, e.g. a static
+# server or file://) can call this API from the browser. Done manually via an
+# after_request hook so it works without the flask_cors package installed.
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
 # Load environment variables
 def configure():
     load_dotenv()
@@ -39,6 +49,14 @@ def requests_page():
 
     # Extract the news data from the JSON-formatted response and format it into a list of news item objects
     results = stock_news_json.get('results')
+
+    # Guard against an empty/missing result set (e.g. invalid ticker or no recent news)
+    if not results:
+        return jsonify({
+            "error": "No news results found for ticker '{0}'. Check the symbol and try again.".format(ticker),
+            "sentiments": []
+        }), 404
+
     data_model = []
     for result in results:
         item = NewsItem(
@@ -77,38 +95,54 @@ def analyse_stock_news(user_input):
     
     # Initialize the OpenAI API client
     client = OpenAI(api_key=os.getenv('openai_api_key'))
-    
-    # Make the API call to the OpenAI model to generate a response
+
+    # JSON schema for the structured response. Every property is required and
+    # additionalProperties is false, as mandated by OpenAI structured outputs.
+    sentiment_schema = {
+        "type": "object",
+        "properties": {
+            "sentiments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "ticker": {"type": "string", "description": "Symbol used to represent the stock"},
+                        "stock_name": {"type": "string", "description": "Full name of the stock"},
+                        "sentiment_score": {"type": "integer", "description": "Score between 1-100 of the sentiment"},
+                        "recommendation": {"type": "string", "description": "Choose between Buy, Strong Buy and Do Not Buy to recommend suggestion for buying stock"},
+                        "reason": {"type": "string", "description": "Provide reasons for the recommendation and the sentiment_score"},
+                        "source": {"type": "string", "description": "Quote the source or web url link for the reason and recommendation"},
+                    },
+                    "required": ["ticker", "stock_name", "sentiment_score", "recommendation", "reason", "source"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["sentiments"],
+        "additionalProperties": False,
+    }
+
+    # Make the API call using the current structured-outputs pattern (response_format
+    # with a strict json_schema) instead of the deprecated functions= parameter.
     completion = client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a helpful review analysis tool."},
             {"role": "user", "content": prompt},
         ],
-        functions=[{"name": "fn_set_sentiment", "parameters": {
-          "type": "object",
-          "properties": {
-            "sentiments": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "ticker": {"type": "string", "description": "Symbol used to represent the stock"},
-                  "stock_name": {"type": "string", "description": "Full name of the stock"},
-                  "sentiment_score": {"type": "integer","description": "Score between 1-100 of the sentiment"},
-                  "recommendation": {"type": "string","description": "Choose between Buy, Strong Buy and Do Not Buy to recommend suggestion for buying stock"},
-                  "reason": {"type": "string", "description": "Provide reasons for the recommendation and the sentiment_score" },
-                  "source": {"type": "string", "description": "Quote the source or web url link for the reason and recommendation" },
-                }
-              }
-            }
-          }
-        }}],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "stock_sentiments",
+                "strict": True,
+                "schema": sentiment_schema,
+            },
+        },
     )
-    
-    # Convert the returned response from the GPT-3.5 model into a JSON-formatted string and return it as the API response
+
+    # With structured outputs the content is a JSON string matching the schema.
     try:
-        generated_text = completion.choices[0].message.function_call.arguments
+        generated_text = completion.choices[0].message.content
         return json.loads(generated_text)
     except Exception as e:
         print(f"An error occurred: {e}")

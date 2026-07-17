@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StockSense — Portfolio & AI Sentiment</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+
+  <header class="header">
+    <div class="header-logo">📈</div>
+    <div class="header-titles">
+      <h1>StockSense</h1>
+      <p>Portfolio & AI-powered sentiment</p>
+    </div>
+    <nav class="nav-tabs">
+      <button class="nav-tab active" id="tab-portfolio" onclick="showView('portfolio')">Portfolio</button>
+      <button class="nav-tab" id="tab-recommendations" onclick="showView('recommendations')">Recommendations</button>
+    </nav>
+  </header>
+
+  <main class="container">
+
+    <!-- ============ PORTFOLIO VIEW ============ -->
+    <section class="view" id="view-portfolio">
+      <div class="cta-row">
+        <div>
+          <div class="section-title">Your Portfolio</div>
+          <div class="section-sub" style="margin-bottom:0">A snapshot of your current holdings.</div>
+        </div>
+        <button class="btn btn-primary" onclick="analyzePortfolio()">✨ Get AI Recommendations →</button>
+      </div>
+
+      <div class="tiles" id="portfolioTiles"></div>
+
+      <div class="holdings" id="holdingsTable"></div>
+
+      <p class="disclaimer">
+        Holdings and prices shown are illustrative sample data for demonstration only.
+        Nothing here is financial advice.
+      </p>
+    </section>
+
+    <!-- ============ RECOMMENDATIONS VIEW ============ -->
+    <section class="view" id="view-recommendations" hidden>
+      <div class="section-title">AI Recommendations</div>
+      <div class="section-sub">Sentiment analysis of recent news for your watchlist.</div>
+
+      <div class="search-card">
+        <label for="tickerInput">Analyze a watchlist</label>
+        <div class="search-row">
+          <input id="tickerInput" type="text" placeholder="e.g. AAPL, MSFT, NVDA" autocomplete="off" />
+          <button id="searchBtn" class="btn btn-primary" onclick="searchSentiment()">Analyze</button>
+          <button id="demoBtn" class="btn btn-secondary" onclick="loadDemo()" title="Load a sample watchlist">Demo</button>
+        </div>
+        <p class="hint">Enter one or more comma-separated ticker symbols, or open this screen from your Portfolio.</p>
+      </div>
+
+      <div id="results"></div>
+    </section>
+
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

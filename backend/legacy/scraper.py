@@ -7,11 +7,8 @@ app = Flask(__name__)
 @app.route('/scrapper/', methods=['GET'])
 def scrape_webpage():
     # Get the URL from the query parameters
-    url = "https://www.fool.com/investing/2024/08/02/why-nvidia-stock-kept-tumbling-on-friday/?source=iedfolrf0000001"
-    
-    
-    # url = request.args.get('https://www.fool.com/investing/2024/08/02/why-nvidia-stock-kept-tumbling-on-friday/?source=iedfolrf0000001', None)
-    
+    url = request.args.get('url', None)
+
     if not url:
         return jsonify({"error": "URL parameter is required"}), 400
 
