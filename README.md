@@ -7,7 +7,8 @@ A demo app with two screens:
 2. **Recommendations** — enter a watchlist (or jump straight from the portfolio
    via *Get AI Recommendations*) and StockSense pulls recent news per ticker,
    runs it through an OpenAI model, and shows a sentiment score (1–100), a
-   Buy / Strong Buy / Do Not Buy recommendation, and a short reason per stock.
+   Bearish / Neutral / Bullish / Strongly Bullish recommendation, and a short
+   reason per stock.
 
 ```
 frontend (browser)  ──GET /sentiment/?tickers=AAPL,MSFT,NVDA──►  backend (Flask)
@@ -136,7 +137,7 @@ This project intentionally showcases several patterns:
       "ticker": "AAPL",
       "stock_name": "Apple Inc.",
       "sentiment_score": 78,
-      "recommendation": "Buy",
+      "recommendation": "Bullish",
       "reason": "...",
       "source": "..."
     }

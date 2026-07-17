@@ -55,11 +55,10 @@ _SENTIMENT_SCHEMA = {
 
 # Ordered high-to-low: first matching (min_score) threshold wins.
 _RECOMMENDATION_THRESHOLDS = [
-    (86, "Strong Buy"),
-    (66, "Buy"),
-    (46, "Hold"),
-    (26, "Watch"),
-    (0,  "Do Not Buy"),
+    (86, "Strongly Bullish"),
+    (66, "Bullish"),
+    (26, "Neutral"),
+    (0,  "Bearish"),
 ]
 
 
@@ -76,7 +75,7 @@ def _recommendation_for_score(sentiment_score) -> str:
     for min_score, label in _RECOMMENDATION_THRESHOLDS:
         if score >= min_score:
             return label
-    return "Do Not Buy"
+    return "Bearish"
 
 
 def _enrich_with_full_text(articles: list) -> list:
