@@ -34,6 +34,9 @@ It started as a small experiment to answer a practical question: *can an LLM tur
 
 ## Demo
 
+<img width="1920" height="1080" alt="Stock Sense Video" src="https://github.com/user-attachments/assets/e0f7eea7-6c31-44e5-93ef-3be2fdc9973f" />
+
+
 <!-- TODO: replace with the actual demo GIF -->
 ![StockSense demo](./docs/demo.gif)
 
