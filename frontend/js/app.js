@@ -128,25 +128,23 @@
       if (e.key === 'Enter') searchSentiment();
     });
 
-    // Mirrors the backend's 5-tier score -> recommendation mapping
-    // (see _recommendation_for_score in sentiment_service.py) so the bar color
+    // Mirrors the backend's score -> recommendation mapping (see
+    // _recommendation_for_score in sentiment_service.py) so the bar color
     // always lines up with the badge shown next to it.
     function getBarColor(score) {
-      if (score <= 25) return '#ef4444';  // Do Not Buy
-      if (score <= 45) return '#f97316';  // Watch
-      if (score <= 65) return '#f59e0b';  // Hold
-      if (score <= 85) return '#22c55e';  // Buy
-      return '#16a34a';                   // Strong Buy
+      if (score <= 25) return '#ef4444';  // Bearish
+      if (score <= 65) return '#f59e0b';  // Neutral
+      if (score <= 85) return '#22c55e';  // Bullish
+      return '#16a34a';                   // Strongly Bullish
     }
 
     function getBadgeClass(rec) {
       if (!rec) return 'badge-default';
       const r = rec.toLowerCase().trim();
-      if (r === 'strong buy') return 'badge-strong-buy';
-      if (r === 'buy')        return 'badge-buy';
-      if (r === 'hold')       return 'badge-hold';
-      if (r === 'watch')      return 'badge-watch';
-      if (r === 'do not buy') return 'badge-do-not-buy';
+      if (r === 'strongly bullish') return 'badge-strongly-bullish';
+      if (r === 'bullish')          return 'badge-bullish';
+      if (r === 'neutral')          return 'badge-neutral';
+      if (r === 'bearish')          return 'badge-bearish';
       return 'badge-default';
     }
 

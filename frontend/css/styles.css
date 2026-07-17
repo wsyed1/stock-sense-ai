@@ -355,12 +355,11 @@
       white-space: nowrap;
       flex-shrink: 0;
     }
-    .badge-strong-buy  { background: #16a34a; color: #fff; }
-    .badge-buy         { background: #22c55e; color: #fff; }
-    .badge-hold        { background: #f59e0b; color: #fff; }
-    .badge-watch       { background: #f97316; color: #fff; }
-    .badge-do-not-buy  { background: #ef4444; color: #fff; }
-    .badge-default     { background: #6b7280; color: #fff; }
+    .badge-strongly-bullish { background: #16a34a; color: #fff; }
+    .badge-bullish          { background: #22c55e; color: #fff; }
+    .badge-neutral          { background: #f59e0b; color: #fff; }
+    .badge-bearish          { background: #ef4444; color: #fff; }
+    .badge-default          { background: #6b7280; color: #fff; }
 
     .score-label-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
     .score-label { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
