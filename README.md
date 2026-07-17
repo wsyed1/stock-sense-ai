@@ -1,200 +1,156 @@
-# stock-sense-ai
+# StockSense — Portfolio & AI Stock Sentiment
 
-## Features
+A demo app with two screens:
 
-- Sentiment analysis of stocks based on news articles using OpenAI's GPT model.
-- Retrieves stock-related news articles via the Polygon API and provides actionable insights.
-- Provides recommendations (e.g., Buy, Strong Buy, Do Not Buy) based on sentiment analysis.
-- Integration with OpenAI for advanced sentiment analysis and stock recommendations.
+1. **Portfolio** (home) — a sample stock portfolio with summary tiles (total
+   value, gain/loss) and a holdings table.
+2. **Recommendations** — enter a watchlist (or jump straight from the portfolio
+   via *Get AI Recommendations*) and StockSense pulls recent news per ticker,
+   runs it through an OpenAI model, and shows a sentiment score (1–100), a
+   Buy / Strong Buy / Do Not Buy recommendation, and a short reason per stock.
 
----
-
-## Prerequisites
-
-- Python 3.7 or higher  
-- Flask  
-- OpenAI Python client  
-- Polygon API key  
-- Python Dotenv  
-
----
-
-## Setup Instructions
-
-### 1. Clone the repository:
-```bash
-git clone https://github.com/your_username/stock-sense-ai.git
-cd stock-sense-ai
+```
+frontend (browser)  ──GET /sentiment/?tickers=AAPL,MSFT,NVDA──►  backend (Flask)
+       ▲                                                                │
+       │                                                    1. Polygon.io news per ticker
+       │                                                    2. (optional) scrape full article text
+       └──────────────  JSON { sentiments: [...] }  ◄───────  3. OpenAI structured output
 ```
 
-### 2. Install the required packages:
+## Project layout
 
-```bash
-pip install flask openai python-dotenv requests
+```
+stock-sense-ai/
+├── frontend/                 Static single-page app (no build step)
+│   ├── index.html            Markup + view structure
+│   ├── css/styles.css        All styles
+│   └── js/app.js             Portfolio + recommendations logic
+├── backend/                  Flask API
+│   ├── app.py                Routes only (/ and /sentiment/)
+│   ├── config.py             Central config; reads secrets from .env
+│   ├── .env.example          Template — copy to .env and add your keys
+│   ├── services/
+│   │   ├── polygon_client.py     Fetches news from Polygon.io
+│   │   ├── scraper_service.py    Scrapes full article text (newspaper3k or fallback)
+│   │   └── sentiment_service.py  Orchestrates fetch → scrape → model → result
+│   ├── models/news_item.py   News data model
+│   └── legacy/               Earlier prototypes, kept for reference only
+├── venv/                     Python virtual environment (Flask, requests, openai…)
+└── README.md
 ```
 
-### 3. Set up environment variables:
-Create a `.env` file at the project root and add your OpenAI API key and Polygon API key:
+## Setup
+
+1. **Activate the virtualenv** (ships with Flask, requests, openai, python-dotenv):
+
+   ```bash
+   source venv/bin/activate
+   # For full-text scraping (recommended — the app falls back to a lightweight
+   # requests-based scraper if this is not installed):
+   ./venv/bin/pip install newspaper3k lxml_html_clean
+   ```
+
+   Check which scraper is active at runtime with
+   `python -c "from services import scraper_service; print(scraper_service.backend_name())"`
+   from the `backend/` directory — it prints `newspaper3k` or `requests-fallback`.
+
+2. **Add your API keys:**
+
+   ```bash
+   cd backend
+   cp .env.example .env
+   # edit .env — set polygon_api_key and openai_api_key
+   ```
+
+   - Polygon.io key: https://polygon.io
+   - OpenAI key: https://platform.openai.com
+
+## Running
+
+**Backend** (run from the `backend/` directory so imports resolve):
 
 ```bash
-polygon_api_key=your_polygon_api_key_here
-openai_api_key=your_openai_api_key_here
+cd backend
+../venv/bin/python app.py
+# serving on http://127.0.0.1:8888
 ```
 
-## Usage
-
-### 1. Running the Application:
-
-Run the app locally:
+**Frontend** — serve the `frontend/` directory with any static server:
 
 ```bash
-python3 app.py
+cd frontend
+../venv/bin/python -m http.server 5500
+# open http://127.0.0.1:5500/index.html
 ```
 
-## APIs
+## Using it
 
-### 1️⃣ Home Page
+- The **Portfolio** screen loads first with a sample portfolio.
+- Click **Get AI Recommendations** to send all your holdings to the analyzer, or
+  switch to the **Recommendations** tab and type tickers manually / click **Demo**.
+- Tickers with no recent news come back marked **No Data**.
 
-#### Description:
-Returns a welcome message with the current timestamp.
+### Pointing the frontend at a different backend
 
-#### Endpoint:
+`js/app.js` resolves its API base in this order (no code edit needed):
 
-```bash
-GET http://127.0.0.1:8888/
-```
+1. `?api=<url>` query param — `index.html?api=http://myhost:9000`
+2. `window.STOCKSENSE_API_BASE` global
+3. `localStorage['stocksense_api_base']`
+4. default `http://127.0.0.1:8888`
 
-#### Sample cURL:
+## Concepts demonstrated (for the write-up)
 
-```bash
-curl -X GET http://127.0.0.1:8888/
-```
+This project intentionally showcases several patterns:
 
-#### Sample Response:
+- **Web scraping** — `services/scraper_service.py` fetches full article text
+  (newspaper3k, with a requests-based fallback) and feeds it to the model, so
+  sentiment is grounded in the article body, not just a headline.
+- **Two ways to get consistent, schema-valid JSON from an LLM**, sharing one
+  schema and prompt so they can be compared directly:
+  - **Structured outputs** (default) — `response_format` with a strict
+    `json_schema`. See `_score_structured_outputs()`.
+  - **Function / tool calling** — the schema is declared as a function's
+    `parameters`; the model is forced to call it via `tool_choice`, and the JSON
+    is read from `message.tool_calls[0].function.arguments`. See
+    `_score_function_calling()`.
 
-```bash
+  Select the mechanism with the `method` query param:
+
+  ```
+  GET /sentiment/?tickers=AAPL,MSFT&method=structured   # default
+  GET /sentiment/?tickers=AAPL,MSFT&method=function      # function calling
+  ```
+
+  The response echoes which one ran in a top-level `"method"` field.
+
+## API
+
+`GET /sentiment/?tickers=AAPL,MSFT,NVDA` → one entry per requested ticker, in order:
+
+```json
 {
-    "Page": "Home",
-    "Message": "Welcome to Stock App Page",
-    "TimeStamp": 1698725464.123456
+  "method": "structured",
+  "sentiments": [
+    {
+      "ticker": "AAPL",
+      "stock_name": "Apple Inc.",
+      "sentiment_score": 78,
+      "recommendation": "Buy",
+      "reason": "...",
+      "source": "..."
+    }
+  ]
 }
 ```
 
-### 2️⃣ Stock Sentiment Analysis
+Errors return the same shape with an `error` string and empty `sentiments`
+(400 bad input, 502 upstream/Polygon failure, 500 otherwise).
 
-#### Description:
-Fetches stock-related news articles from Polygon API and uses OpenAI’s GPT to analyze and provide sentiment recommendations.
+## Configuration reference
 
-#### Endpoint:
-```bash
-GET http://127.0.0.1:8888/sentiment/?ticker={ticker}&limit={limit}
-```
-#### Query Parameters:
+Optional settings in `backend/.env` (see `backend/.env.example`): `openai_model`,
+`news_limit`, `port`, `enable_scraping`, `scrape_articles_per_ticker`.
 
-`ticker`: The stock ticker symbol (e.g., "AAPL" for Apple).
-`limit`: Number of news articles to retrieve (default is 10).
-
-#### Sample cURL:
-```bash
-curl -X GET "http://127.0.0.1:8888/sentiment/?ticker=AAPL&limit=5"
-```
-#### Sample Response:
-```bash
-{
-"sentiments": [
-{
-"reason": "Stock fell 18.1% due to trade war tensions with China, potential tariff impacts, and disappointing AI technology progress, including delayed Siri AI features and potential reliance on third-party AI models",
-"recommendation": "Do Not Buy",
-"sentiment_score": 40,
-"source": "https://www.fool.com/investing/2025/07/14/why-apple-fell-181-in-the-first-half-of-2025/?source=iedfolrf0000001",
-"stock_name": "Apple Inc.",
-"ticker": "AAPL"
-},
-{
-"reason": "Strong AI potential through AWS cloud services and robotics integration, seen as having significant long-term growth opportunities",
-"recommendation": "Buy",
-"sentiment_score": 80,
-"source": "https://www.fool.com/investing/2025/07/14/warren-buffett-has-658-billion-invested-in-these-4/?source=iedfolrf0000001",
-"stock_name": "Amazon.com Inc.",
-"ticker": "AMZN"
-},
-{
-"reason": "Stock price showed modest gain (+0.83%), suggesting mild investor optimism",
-"recommendation": "Do Not Buy",
-"sentiment_score": 60,
-"source": "https://m.investing.com/analysis/sp-500-key-weekly-levels-and-price-targets-200663654?ampMode=1",
-"stock_name": "Tesla Inc.",
-"ticker": "TSLA"
-},
-{
-"reason": "Stock price remained nearly unchanged (-0.02%), indicating stable market perception",
-"recommendation": "Do Not Buy",
-"sentiment_score": 50,
-"source": "https://m.investing.com/analysis/sp-500-key-weekly-levels-and-price-targets-200663654?ampMode=1",
-"stock_name": "NVIDIA Corporation",
-"ticker": "NVDA"
-},
-{
-"reason": "Small portfolio position with limited AI growth prospects compared to other tech companies",
-"recommendation": "Do Not Buy",
-"sentiment_score": 50,
-"source": "https://www.fool.com/investing/2025/07/14/warren-buffett-has-658-billion-invested-in-these-4/?source=iedfolrf0000001",
-"stock_name": "Cisco Systems Inc.",
-"ticker": "CSCO"
-},
-{
-"reason": "Small portfolio position with specialized business and potentially constrained AI growth opportunities",
-"recommendation": "Do Not Buy",
-"sentiment_score": 50,
-"source": "https://www.fool.com/investing/2025/07/14/warren-buffett-has-658-billion-invested-in-these-4/?source=iedfolrf0000001",
-"stock_name": "Qualcomm Inc.",
-"ticker": "QCOM"
-},
-{
-"reason": "Solid foundation in networking solutions and wireless chips, not primarily chosen for AI",
-"recommendation": "Do Not Buy",
-"sentiment_score": 50,
-"source": "https://www.fool.com/investing/2025/07/14/billionaire-warren-buffett-owns-5-ai-stocks-catch/?source=iedfolrf0000001",
-"stock_name": "Broadcom Inc.",
-"ticker": "AVGO"
-},
-{
-"reason": "Strong cloud platform Azure, robust legacy operations, and AI integration potential",
-"recommendation": "Buy",
-"sentiment_score": 80,
-"source": "https://www.fool.com/investing/2025/07/14/billionaire-warren-buffett-owns-5-ai-stocks-catch/?source=iedfolrf0000001",
-"stock_name": "Microsoft Corporation",
-"ticker": "MSFT"
-},
-{
-"reason": "Dominant search engine market share, YouTube platform, and emerging AI capabilities",
-"recommendation": "Buy",
-"sentiment_score": 80,
-"source": "https://www.fool.com/investing/2025/07/14/billionaire-warren-buffett-owns-5-ai-stocks-catch/?source=iedfolrf0000001",
-"stock_name": "Alphabet Inc.",
-"ticker": "GOOG"
-},
-{
-"reason": "Dominant search engine market share, YouTube platform, and emerging AI capabilities",
-"recommendation": "Buy",
-"sentiment_score": 80,
-"source": "https://www.fool.com/investing/2025/07/14/billionaire-warren-buffett-owns-5-ai-stocks-catch/?source=iedfolrf0000001",
-"stock_name": "Alphabet Inc.",
-"ticker": "GOOGL"
-}
-]
-}
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
+> **Disclaimer:** portfolio holdings/prices are illustrative sample data, and AI
+> sentiment scores/recommendations are model-generated — not financial advice.
