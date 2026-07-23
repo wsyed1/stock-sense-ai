@@ -128,6 +128,8 @@ def _score_structured_outputs(client, tickers_with_news, news_by_ticker) -> list
     """
     completion = client.chat.completions.create(
         model=config.OPENAI_MODEL,
+        temperature=config.OPENAI_TEMPERATURE,
+        seed=config.OPENAI_SEED,
         messages=[
             {"role": "system", "content": "You are a helpful stock-news sentiment analyst."},
             {"role": "user", "content": _build_prompt(tickers_with_news, news_by_ticker)},
@@ -163,6 +165,8 @@ def _score_function_calling(client, tickers_with_news, news_by_ticker) -> list:
     }]
     completion = client.chat.completions.create(
         model=config.OPENAI_MODEL,
+        temperature=config.OPENAI_TEMPERATURE,
+        seed=config.OPENAI_SEED,
         messages=[
             {"role": "system", "content": "You are a helpful stock-news sentiment analyst."},
             {"role": "user", "content": _build_prompt(tickers_with_news, news_by_ticker)},
