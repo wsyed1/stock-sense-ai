@@ -10,9 +10,24 @@ import time
 from flask import Flask, request, jsonify, Response
 
 import config
-from services import polygon_client, sentiment_service
+from services import polygon_client, price_client, sentiment_service
 
 app = Flask(__name__)
+
+
+def _parse_tickers(raw):
+    """Parse a comma-separated 'tickers' param into a clean list.
+
+    Returns (tickers, error_message). error_message is None on success.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None, ("Missing required 'tickers' parameter. Pass a comma-separated "
+                      "list, e.g. ?tickers=AAPL,MSFT,NVDA")
+    tickers = [t for t in (part.strip() for part in raw.split(",")) if t]
+    if not tickers:
+        return None, "No valid tickers found in the 'tickers' parameter."
+    return tickers, None
 
 
 # Enable CORS so the frontend (served from a different origin or file://) can
@@ -39,7 +54,10 @@ def home_page():
     return _json_response({
         "app": "StockSense",
         "message": "Watchlist sentiment analysis API.",
-        "usage": "/sentiment/?tickers=AAPL,MSFT,NVDA",
+        "usage": {
+            "sentiment": "/sentiment/?tickers=AAPL,MSFT,NVDA",
+            "prices": "/prices/?tickers=AAPL,MSFT,NVDA",
+        },
         "timestamp": time.time(),
     })
 
@@ -53,20 +71,9 @@ def sentiment_page():
         method  (optional) — "structured" (default) or "function", selecting how
                              consistent JSON is obtained from the model.
     """
-    raw = request.args.get("tickers", "").strip()
-    if not raw:
-        return _json_response({
-            "error": "Missing required 'tickers' parameter. "
-                     "Pass a comma-separated list, e.g. /sentiment/?tickers=AAPL,MSFT,NVDA",
-            "sentiments": [],
-        }, status=400)
-
-    tickers = [t for t in (part.strip() for part in raw.split(",")) if t]
-    if not tickers:
-        return _json_response({
-            "error": "No valid tickers found in the 'tickers' parameter.",
-            "sentiments": [],
-        }, status=400)
+    tickers, error = _parse_tickers(request.args.get("tickers"))
+    if error:
+        return _json_response({"error": error, "sentiments": []}, status=400)
 
     method = request.args.get("method", sentiment_service.DEFAULT_METHOD).strip().lower()
 
@@ -83,6 +90,36 @@ def sentiment_page():
         )
 
     return _json_response(result)
+
+
+@app.route("/prices/", methods=["GET"])
+def prices_page():
+    """Fetch the latest (previous-close) price + day change per ticker.
+
+    Query param:
+        tickers (required) — comma-separated symbols, e.g. AAPL,MSFT,NVDA
+
+    Note: Polygon's free tier returns delayed / end-of-day data, so 'price' is
+    the previous close, not a real-time quote. The 'note' field says so.
+    """
+    tickers, error = _parse_tickers(request.args.get("tickers"))
+    if error:
+        return _json_response({"error": error, "prices": []}, status=400)
+
+    try:
+        prices = price_client.fetch_prices(tickers)
+    except price_client.PriceError as exc:
+        return _json_response({"error": str(exc), "prices": []}, status=502)
+    except config.ConfigError as exc:
+        return _json_response({"error": str(exc), "prices": []}, status=500)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("Unexpected error fetching prices")
+        return _json_response({"error": f"Unexpected error: {exc}", "prices": []}, status=500)
+
+    return _json_response({
+        "note": "Prices are previous close (Polygon free tier = delayed / end-of-day data).",
+        "prices": prices,
+    })
 
 
 if __name__ == "__main__":

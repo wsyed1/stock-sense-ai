@@ -9,8 +9,10 @@
       ).replace(/\/+$/, '');
     })();
 
-    // ---- Mock portfolio (illustrative sample data) ----
-    // price = current price, cost = average cost basis per share.
+    // ---- Portfolio (holdings are sample data; prices are fetched live) ----
+    // shares/cost are illustrative; `price` starts as a fallback and is
+    // overwritten with the real previous close from Polygon on load (see
+    // refreshPrices). `priceIsLive` tracks whether the live fetch succeeded.
     const PORTFOLIO = [
       { ticker: 'AAPL',  company: 'Apple Inc.',            shares: 42, price: 229.35, cost: 178.20, color: '#0f172a' },
       { ticker: 'MSFT',  company: 'Microsoft Corp.',       shares: 18, price: 441.10, cost: 402.55, color: '#2563eb' },
@@ -90,7 +92,7 @@
             </div>
             <div class="num col-price">
               <div class="holding-value">${fmtMoney(h.price)}</div>
-              <div class="holding-company">last price</div>
+              <div class="holding-company">${h.priceIsLive ? 'prev. close' : 'sample price'}</div>
             </div>
             <div class="num">
               <div class="holding-value">${fmtMoney(value)}</div>
@@ -338,5 +340,39 @@
       }
     }
 
+    // ---------- Live prices ----------
+    // Fetch real previous-close prices from the backend /prices/ endpoint and
+    // patch them into PORTFOLIO, then re-render. Fails soft: if the API is down
+    // or a ticker has no data, that holding keeps its sample price (labeled as
+    // such) and the rest of the app is unaffected.
+    async function refreshPrices() {
+      const tickers = PORTFOLIO.map(h => h.ticker);
+      const url = `${API_BASE}/prices/?tickers=${encodeURIComponent(tickers.join(','))}`;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok) return;  // keep sample prices on error
+
+        const data = await res.json();
+        const byTicker = Object.fromEntries((data.prices || []).map(p => [p.ticker, p]));
+
+        PORTFOLIO.forEach(h => {
+          const p = byTicker[h.ticker];
+          if (p && typeof p.price === 'number') {
+            h.price = p.price;
+            h.priceIsLive = true;
+          }
+        });
+        renderPortfolio();
+      } catch {
+        clearTimeout(timer);
+        // Network/timeout: leave sample prices in place.
+      }
+    }
+
     // ---- init ----
-    renderPortfolio();
+    renderPortfolio();   // paint immediately with sample prices
+    refreshPrices();     // then swap in live prices when they arrive

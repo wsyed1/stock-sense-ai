@@ -38,6 +38,37 @@ def get_openai_api_key() -> str:
 # Model used for sentiment analysis.
 OPENAI_MODEL = os.getenv("openai_model", "gpt-4o-mini")
 
+# --- Determinism knobs (temperature + seed) ------------------------------
+#
+# IMPORTANT: these control reproducibility for IDENTICAL input only. They do NOT
+# freeze a stock's sentiment over time. There are two very different kinds of
+# "change" to keep straight:
+#
+#   1. The news itself changing  -> a stock can read Bullish now and Bearish an
+#      hour later once new articles appear. That is REAL change: the input is
+#      different, so the score SHOULD differ. These settings do not touch it.
+#   2. The model wobbling on the SAME news -> without determinism the model might
+#      say 88 one run and 81 the next for byte-identical input. That is FAKE
+#      variation (just sampling randomness), and it is what we remove here.
+#
+# So this does not hurt accuracy: it strips out random noise on identical input
+# while leaving genuine news-driven movement fully intact. Think of it as using
+# the same scale every time — the reading is repeatable, but your weight still
+# changes day to day. Note OpenAI treats this as *best-effort* reproducibility,
+# not an ironclad guarantee, so small drift is still possible.
+
+# Sampling temperature for the model. 0 makes outputs (near-)deterministic, so
+# the same news input yields the same sentiment scores between runs — the
+# simplest lever for making the system measurable/consistent. Override in .env.
+OPENAI_TEMPERATURE = float(os.getenv("openai_temperature", "0"))
+
+# Fixed sampling seed. temperature=0 reduces run-to-run drift but does not fully
+# guarantee it; passing a stable seed makes the model's output far more
+# reproducible. The value (42) is arbitrary — any fixed number works; what
+# matters is that it stays constant. Set openai_seed= (empty) in .env to disable.
+_raw_seed = os.getenv("openai_seed", "42")
+OPENAI_SEED = int(_raw_seed) if _raw_seed.strip() else None
+
 # How many news articles to pull per ticker from Polygon.
 DEFAULT_NEWS_LIMIT = int(os.getenv("news_limit", "5"))
 
