@@ -2,7 +2,7 @@
 
 Routes only; the real work lives in services/. Run with:
 
-    cd APIs && ../venv/bin/python app.py
+    cd backend && ../venv/bin/python app.py
 """
 import json
 import time
