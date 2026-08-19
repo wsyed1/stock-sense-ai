@@ -26,9 +26,9 @@ StockSense is a two-screen web app:
 1. **Portfolio** — a home screen showing a sample stock portfolio: holdings, share counts, cost basis, current value, and gain/loss, rolled up into summary tiles.
 2. **AI Recommendations** — pick a watchlist (or send your whole portfolio there in one click) and StockSense will:
    - pull the most recent news for each ticker from a market data API,
-   - scrape the *full text* of the top articles (not just the headline/snippet),
-   - hand all of that to an LLM and ask it to judge sentiment,
-   - and render the result as a **Bearish → Neutral → Bullish → Strongly Bullish** rating with a plain-English rationale and a source link.
+   - scrape the *full text* of the top articles concurrently (not just the headline/snippet),
+   - hand all of that to an LLM and ask it to judge sentiment, in detail,
+   - and render the result as a **Strongly Bearish → Bearish → Slightly Bearish → Neutral → Slightly Bullish → Bullish → Strongly Bullish** rating, with a multi-sentence rationale, live previous-close price, and links to every source article used.
 
 It started as a small experiment to answer a practical question: *can an LLM turn a pile of raw news into something that actually reads like a research note?* Along the way it became a compact, readable reference for a handful of patterns that come up constantly when building anything LLM-powered — structured output, function calling, and grounding a model's answer in real retrieved text instead of letting it guess.
 
@@ -44,7 +44,7 @@ It started as a small experiment to answer a practical question: *can an LLM tur
 
 ## Architecture
 
-A deliberately small, two-service design: a static frontend and a single Flask API that fans out to two external services per ticker.
+A deliberately small design: a static frontend and a single Flask API that fans out to Polygon.io, a pool of scraped article pages, and OpenAI.
 
 ```
 ┌─────────────────────────┐
@@ -54,33 +54,34 @@ A deliberately small, two-service design: a static frontend and a single Flask A
 │  • Portfolio view       │
 │  • Recommendations view │
 │    (cards, bars,        │
-│    badges)              │
-└───────────┬─────────────┘
-            │  GET /sentiment/?tickers=AAPL,MSFT
-            │  { method, sentiments: [...] }
-            ▼
+│    badges, prices)      │
+└──────┬───────────┬──────┘
+       │           │  GET /prices/?tickers=... (parallel)
+       │           ▼
+       │  GET /sentiment/?tickers=AAPL,MSFT
+       │  { method, sentiments: [...], cached, as_of }
+       ▼
 ┌─────────────────────────┐
 │   Backend (Flask API)   │
 │   backend/app.py        │
 │                         │
 │   services/             │
-│    ├─ polygon_client    │
-│    ├─ scraper_service   │
-│    └─ sentiment_service │
+│    ├─ polygon_client    │  news fetch, cached 5 min/ticker
+│    ├─ price_client      │  previous-close price fetch
+│    ├─ scraper_service   │  newspaper3k → requests fallback
+│    └─ sentiment_service │  orchestrates fetch → scrape → model
 └─────┬─────────────┬─────┘
       │             │
       ▼             ▼
-┌───────────┐ ┌───────────────┐
-│ Polygon.io│ │ Article pages │
-│ News API  │ │ (scraped full │
-│ (headline,│ │  text via     │
-│ metadata, │ │  newspaper3k, │
-│ URLs)     │ │  requests     │
-│           │ │  fallback)    │
-└─────┬─────┘ └───────┬───────┘
-      │               │
-      └───────┬───────┘
-              ▼
+┌───────────┐ ┌───────────────────────┐
+│ Polygon.io│ │ Article pages         │
+│ News +    │ │ scraped CONCURRENTLY  │
+│ Price API │ │ via ThreadPoolExecutor│
+│           │ │ (cached 5 min/URL)    │
+└─────┬─────┘ └───────────┬───────────┘
+      │                   │
+      └─────────┬─────────┘
+                ▼
      ┌──────────────────────────┐
      │        OpenAI API        │
      │      (gpt-4o-mini)       │
@@ -96,11 +97,11 @@ A deliberately small, two-service design: a static frontend and a single Flask A
 
 **Request flow, per `/sentiment/` call:**
 
-1. Frontend sends a comma-separated ticker list (either typed manually or pre-filled from the Portfolio screen).
-2. Backend fetches recent news for each ticker from Polygon.io.
-3. For the top few articles per ticker, the backend scrapes the full article body from the source URL (not just Polygon's short description).
-4. All of that news — enriched with full text where available — goes into a single prompt sent once to the OpenAI API, constrained to return valid JSON for every ticker in one pass.
-5. The backend deterministically maps each ticker's numeric score to a human-readable rating (see [Technologies used](#technologies-used)) and returns one row per requested ticker — even ones with no news, marked "No Data" — so the frontend always has a predictable, complete response to render.
+1. Frontend sends a comma-separated ticker list (either typed manually or pre-filled from the Portfolio screen), and fetches `/prices/` for the same tickers in parallel.
+2. Backend fetches recent news for each ticker from Polygon.io, sequentially (cheap per-call, cached for 5 minutes per ticker so repeated/overlapping watchlists skip the network entirely).
+3. For the top few articles across *all* tickers, the backend scrapes full article text concurrently via a `ThreadPoolExecutor` — not one ticker (or one article) at a time — since scraping is blocking I/O and the biggest latency cost in the pipeline. Each scraped URL is also cached for 5 minutes.
+4. All of that news — enriched with full text where available — goes into a single prompt sent once to the OpenAI API, constrained to return valid JSON for every ticker in one pass. The model is asked for a detailed, multi-sentence rationale, not a one-liner.
+5. The backend deterministically maps each ticker's numeric score to a human-readable rating and attaches a `sources` list built directly from Polygon's own article data (title, URL, publisher) — never from the model, so links are always real. It returns one row per requested ticker — even ones with no news, marked "No Data" — so the frontend always has a predictable, complete response to render, along with an `as_of` timestamp and a `cached` flag showing whether the whole request was served from cache.
 
 ## Installation
 
@@ -146,7 +147,7 @@ python -m http.server 5500
 
 - Land on the **Portfolio** tab — a sample portfolio with per-holding value and gain/loss, plus rolled-up summary tiles.
 - Click **✨ Get AI Recommendations** to send your entire portfolio's tickers straight into analysis, or switch to the **Recommendations** tab and type your own comma-separated watchlist (e.g. `AAPL, MSFT, NVDA`), or click **Demo** to load a curated sample list.
-- Each result renders as a card: ticker, sentiment score (1–100), a **Bearish / Neutral / Bullish / Strongly Bullish** badge, a short AI-written rationale, and a link back to the source article.
+- Each result renders as a card: ticker, live previous-close price, sentiment score (1–100), one of **seven** recommendation badges (Strongly Bearish → Strongly Bullish), a detailed AI-written rationale, and links back to every source article used.
 - Point the frontend at a different backend without editing code via `?api=<url>`, a `window.STOCKSENSE_API_BASE` global, or `localStorage`.
 
 ## Technologies used
@@ -157,10 +158,12 @@ This project is intentionally small so each piece is easy to point at and explai
 
 - **[Flask](https://flask.palletsprojects.com/)** — a minimal Python web framework for the single `/sentiment/` endpoint. No ORM, no templating, just routes and JSON.
 - **[Polygon.io News API](https://polygon.io/docs/stocks/get_v2_reference_news)** — the source of truth for *which* articles exist for a ticker: headline, publisher, timestamp, and article URL. It does **not** return full article bodies, which is where scraping comes in.
-- **Web scraping (`newspaper3k`, with a `requests`-based fallback)** — Polygon's article descriptions are often a one-line teaser. To ground the LLM's judgment in the *actual reporting* rather than a snippet, `services/scraper_service.py` downloads and parses the source page for the top articles per ticker:
+- **Web scraping (`newspaper3k`, with a `requests`-based fallback), run concurrently** — Polygon's article descriptions are often a one-line teaser. To ground the LLM's judgment in the *actual reporting* rather than a snippet, `services/scraper_service.py` downloads and parses the source page for the top articles per ticker:
   - **[newspaper3k](https://github.com/codelucas/newspaper)** does the heavy lifting when installed — it's purpose-built for news article extraction (strips ads/navigation/boilerplate, isolates the article body).
   - If newspaper3k (and its `lxml` dependency) isn't available in the environment, the service **fails soft** into a lightweight fallback: a plain `requests` GET plus a regex-based HTML strip. Same interface, lower fidelity, zero hard dependency — the app never breaks because a heavy scraping library didn't install cleanly.
   - Scraping is capped per ticker (a couple of articles, not all of them) since it's the slowest step in the pipeline, and any single article that fails to scrape is silently skipped rather than failing the whole request.
+  - **Concurrency, not asyncio:** `sentiment_service._scrape_all_articles` flattens every ticker's articles into one job list and dispatches them all at once through a `ThreadPoolExecutor` (`SCRAPE_MAX_WORKERS`, default 8), instead of scraping one article at a time. `newspaper3k`/`requests` are blocking, synchronous I/O with no async-native API, so threads — not coroutines — are what actually let many slow downloads run in parallel. A single slow or failed article never blocks or crashes the others.
+  - **In-memory caching:** both Polygon's per-ticker news response and each scraped article's text are cached for a few minutes (`NEWS_CACHE_TTL_SECONDS` / `SCRAPE_CACHE_TTL_SECONDS`, both default 300s), so re-analyzing the same or an overlapping watchlist shortly after skips the network call entirely. The API response's `cached` field reports whether *everything* the request needed came from cache.
 
 - **Two ways to get structured JSON out of an LLM** — this is the part worth lingering on, since "make the model return JSON I can trust" is one of the most common real-world LLM integration problems. `services/sentiment_service.py` implements **both** of the current standard approaches side by side, selectable per-request via `?method=`, so they can be compared directly against the exact same prompt and schema:
 
@@ -171,17 +174,22 @@ This project is intentionally small so each piece is easy to point at and explai
   | Mental model | "Constrain the shape of the answer." | "Give the model a function to invoke, and read what it decided to invoke it with." |
   | Why it matters here | Simpler, and generally the recommended default for pure data-extraction tasks like this one. | The pattern you reach for the moment the model needs to *do* something beyond returning data — e.g. call a real pricing API, place an order, or chain multiple tool calls together. Included here so the same schema/prompt can be seen through both lenses. |
 
-  Both paths return the *same* JSON schema — `ticker`, `stock_name`, `sentiment_score`, `reason`, `source` per ticker — so switching methods changes nothing about what the frontend receives.
+  Both paths return the *same* JSON schema — `ticker`, `stock_name`, `sentiment_score`, `reason` per ticker — so switching methods changes nothing about what the frontend receives.
 
-- **A deliberately "dumb" model, on purpose** — the LLM is only ever asked for a **numeric sentiment score** and a **written rationale**. It is *not* asked to invent the Bearish/Neutral/Bullish/Strongly Bullish label itself. That mapping is a small, deterministic function in plain Python (`_recommendation_for_score`). This means the badge you see can never contradict the score bar next to it — a concrete example of not trusting an LLM with a decision that a few lines of ordinary code can make more reliably.
+- **A deliberately "dumb" model, on purpose** — the LLM is only ever asked for a **numeric sentiment score** and a **detailed written rationale**. It is never asked to invent the recommendation label, nor to recall or cite source URLs:
+  - The score-to-label mapping is a small, deterministic function in plain Python (`_recommendation_for_score`), with **seven** bands — Strongly Bearish, Bearish, Slightly Bearish, Neutral, Slightly Bullish, Bullish, Strongly Bullish — symmetric around a score of 50. The badge you see can never contradict the score bar next to it.
+  - The `sources` list attached to each result is built the same way, straight from Polygon's own article data (`_sources_for_ticker`) — never parsed out of the model's response. A model can paraphrase or misremember a URL; the article metadata it was actually shown cannot.
+  - Both are concrete examples of not trusting an LLM with a decision or a fact that a few lines of ordinary code can produce more reliably.
 
 - **[python-dotenv](https://github.com/theskumar/python-dotenv)** — loads API keys from a git-ignored `.env` file; `config.py` centralizes every tunable (model name, news limit, scraping on/off, port) with clear errors if a required key is missing.
 
 ### Frontend
 
 - **Plain HTML/CSS/JavaScript, no framework, no build step.** For a project this size, a bundler or SPA framework would add more ceremony than value — every file is directly readable and directly editable.
+- **Dark theme** — near-black surfaces throughout, same blue accent and red/amber/green badge colors as before; no light/dark toggle, just one consistent look.
 - **Single-page navigation** between the Portfolio and Recommendations views, implemented as a simple show/hide toggle rather than a routing library.
-- **The `fetch` API with `AbortController`** for request timeouts that scale with watchlist size, since scraping+LLM scoring several tickers at once takes longer than a single lookup.
+- **The `fetch` API with `AbortController`** for request timeouts that scale with watchlist size, since scraping+LLM scoring several tickers at once takes longer than a single lookup. Recommendations fetches `/sentiment/` and `/prices/` concurrently and merges them client-side — a failed or slow `/prices/` call never blocks the sentiment cards from rendering, it just omits the price line.
+- Each card shows live previous-close price + day change (from `/prices/`), a "cached vs. live" indicator with the `as_of` timestamp, and a list of real source links with their actual headlines.
 - Score bars, badges, and colors are all driven by the same score-to-rating logic the backend uses, so frontend and backend visual language stay in sync.
 
 ### External services
@@ -210,13 +218,19 @@ Response:
       "sentiment_score": 78,
       "recommendation": "Bullish",
       "reason": "...",
-      "source": "..."
+      "sources": [
+        { "title": "...", "url": "...", "publisher": "..." }
+      ]
     }
-  ]
+  ],
+  "cached": false,
+  "as_of": "2026-08-19T23:13:27.776415+00:00"
 }
 ```
 
-One row is returned per requested ticker, in the order requested — tickers with no recent news still come back, marked `"recommendation": "No Data"`, so the response shape is always predictable. Errors use the same shape with an `error` string and an empty `sentiments` array (`400` bad input, `502` upstream/Polygon failure, `500` otherwise).
+One row is returned per requested ticker, in the order requested — tickers with no recent news still come back, marked `"recommendation": "No Data"` with an empty `sources` list, so the response shape is always predictable. `cached` is `true` only when every Polygon/scrape call the request needed was served from the in-memory cache. `as_of` is the response timestamp (UTC), stamped by the route — not necessarily "when this news was fetched," since a cached response can reuse recently-fetched data. Errors use the same shape with an `error` string and an empty `sentiments` array (`400` bad input, `502` upstream/Polygon failure, `500` otherwise).
+
+`GET /prices/?tickers=AAPL,MSFT,NVDA` — previous-close price + day change per ticker (Polygon free tier = delayed/end-of-day, not real-time), used by both the Portfolio tab and each Recommendations card.
 
 ## Project layout
 
@@ -227,18 +241,25 @@ stock-sense-ai/
 │   ├── css/styles.css        All styles
 │   └── js/app.js             Portfolio + recommendations logic
 ├── backend/                  Flask API
-│   ├── app.py                Routes only (/ and /sentiment/)
+│   ├── app.py                Routes only (/, /sentiment/, /prices/)
 │   ├── config.py             Central config; reads secrets from .env
 │   ├── .env.example          Template — copy to .env and add your keys
 │   ├── services/
-│   │   ├── polygon_client.py     Fetches news from Polygon.io
+│   │   ├── polygon_client.py     Fetches + caches news from Polygon.io
+│   │   ├── price_client.py       Fetches previous-close price + day change
 │   │   ├── scraper_service.py    Scrapes full article text (newspaper3k or fallback)
-│   │   └── sentiment_service.py  Orchestrates fetch → scrape → model → result
+│   │   └── sentiment_service.py  Orchestrates fetch → concurrent scrape → model → result
 │   ├── models/news_item.py   News data model
+│   ├── evals/                 Sentiment quality checks (schema, consistency, cross-method agreement)
 │   └── legacy/               Earlier prototypes, kept for reference only
 ├── venv/                     Python virtual environment
-└── README.md
+├── README.md
+└── LICENSE                   MIT
 ```
+
+## License
+
+[MIT](./LICENSE) — use it, fork it, learn from it.
 
 ---
 

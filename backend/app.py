@@ -2,10 +2,11 @@
 
 Routes only; the real work lives in services/. Run with:
 
-    cd APIs && ../venv/bin/python app.py
+    cd backend && ../venv/bin/python app.py
 """
 import json
 import time
+from datetime import datetime, timezone
 
 from flask import Flask, request, jsonify, Response
 
@@ -89,6 +90,11 @@ def sentiment_page():
             {"error": f"Unexpected error: {exc}", "sentiments": []}, status=500
         )
 
+    # Stamped here (response time), not in sentiment_service — this is "when did
+    # the API answer", a transport concern, not part of the analysis itself. A
+    # cached news/scrape hit can make this identical to a recent prior response's
+    # as_of even though the underlying data wasn't re-fetched just now.
+    result["as_of"] = datetime.now(timezone.utc).isoformat()
     return _json_response(result)
 
 

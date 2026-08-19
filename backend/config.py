@@ -84,6 +84,26 @@ ENABLE_SCRAPING = os.getenv("enable_scraping", "true").lower() not in ("0", "fal
 # the slow part, so keep this small).
 SCRAPE_ARTICLES_PER_TICKER = int(os.getenv("scrape_articles_per_ticker", "2"))
 
+# Max concurrent worker threads used to scrape articles in parallel (see
+# sentiment_service._scrape_all_articles). Scraping is I/O-bound (blocking HTTP
+# requests), so threads well beyond the CPU core count are still a net win.
+SCRAPE_MAX_WORKERS = int(os.getenv("scrape_max_workers", "8"))
+
+# --- In-memory caching (per process, cleared on restart) ------------------
+#
+# Both caches avoid redundant network calls when the same ticker or article
+# URL is requested again shortly after — e.g. repeated demo runs, or two
+# tickers whose news happens to cite the same article. Neither is meant to
+# survive a restart or be shared across processes; that would need a real
+# cache (Redis, etc.), which isn't warranted at this scale.
+
+# How long a ticker's fetched Polygon news list stays cached before a fresh
+# request is made again.
+NEWS_CACHE_TTL_SECONDS = int(os.getenv("news_cache_ttl_seconds", "300"))
+
+# How long a scraped article's full text stays cached before it is re-scraped.
+SCRAPE_CACHE_TTL_SECONDS = int(os.getenv("scrape_cache_ttl_seconds", "300"))
+
 # A demo watchlist used by the frontend for a one-click demo. The API itself
 # does NOT default to this — callers must pass tickers explicitly. It lives
 # here so the list is defined in exactly one place.
