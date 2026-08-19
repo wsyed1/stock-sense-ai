@@ -131,22 +131,29 @@
     });
 
     // Mirrors the backend's score -> recommendation mapping (see
-    // _recommendation_for_score in sentiment_service.py) so the bar color
-    // always lines up with the badge shown next to it.
+    // _RECOMMENDATION_THRESHOLDS in sentiment_service.py) so the bar color
+    // always lines up with the badge shown next to it. Seven bands,
+    // symmetric around 50 (Neutral).
     function getBarColor(score) {
+      if (score <= 10) return '#b91c1c';  // Strongly Bearish
       if (score <= 25) return '#ef4444';  // Bearish
-      if (score <= 65) return '#f59e0b';  // Neutral
-      if (score <= 85) return '#22c55e';  // Bullish
+      if (score <= 40) return '#f97316';  // Slightly Bearish
+      if (score <= 59) return '#f59e0b';  // Neutral
+      if (score <= 74) return '#84cc16';  // Slightly Bullish
+      if (score <= 89) return '#22c55e';  // Bullish
       return '#16a34a';                   // Strongly Bullish
     }
 
     function getBadgeClass(rec) {
       if (!rec) return 'badge-default';
       const r = rec.toLowerCase().trim();
-      if (r === 'strongly bullish') return 'badge-strongly-bullish';
-      if (r === 'bullish')          return 'badge-bullish';
-      if (r === 'neutral')          return 'badge-neutral';
-      if (r === 'bearish')          return 'badge-bearish';
+      if (r === 'strongly bullish')  return 'badge-strongly-bullish';
+      if (r === 'bullish')           return 'badge-bullish';
+      if (r === 'slightly bullish')  return 'badge-slightly-bullish';
+      if (r === 'neutral')           return 'badge-neutral';
+      if (r === 'slightly bearish')  return 'badge-slightly-bearish';
+      if (r === 'bearish')           return 'badge-bearish';
+      if (r === 'strongly bearish')  return 'badge-strongly-bearish';
       return 'badge-default';
     }
 
@@ -163,12 +170,52 @@
       try { new URL(str); return true; } catch { return false; }
     }
 
-    function buildCardHTML(item) {
+    // Renders a compact price + day-change line for a card, when live price
+    // data is available. Fails soft: returns '' (card just omits the line)
+    // if the /prices/ call failed, timed out, or has no data for this ticker
+    // — mirrors how the Portfolio tab treats missing live prices.
+    function buildPriceHTML(priceInfo) {
+      if (!priceInfo || typeof priceInfo.price !== 'number') return '';
+      const hasChange = typeof priceInfo.change_pct === 'number';
+      const up = hasChange && priceInfo.change_pct >= 0;
+      return `
+        <div class="card-price-row">
+          <span class="card-price">${fmtMoney(priceInfo.price)}</span>
+          <span class="card-price-label">prev. close</span>
+          ${hasChange ? `<span class="card-price-delta ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${fmtPct(priceInfo.change_pct)}</span>` : ''}
+        </div>`;
+    }
+
+    // item.sources is built server-side straight from Polygon's article data
+    // (see _sources_for_ticker in sentiment_service.py) — never from the
+    // model, so titles/URLs here are always real. escapeHTML guards against
+    // headline text containing characters that would otherwise break markup.
+    function escapeHTML(str) {
+      const div = document.createElement('div');
+      div.textContent = str == null ? '' : String(str);
+      return div.innerHTML;
+    }
+
+    function buildSourcesHTML(sources) {
+      if (!sources || sources.length === 0) {
+        return `<span style="font-size:0.8rem;color:var(--text-muted)">No sources available</span>`;
+      }
+      const items = sources.map(s => {
+        if (!isValidUrl(s.url)) return '';
+        const label = s.publisher ? `${escapeHTML(s.title)} — ${escapeHTML(s.publisher)}` : escapeHTML(s.title);
+        return `
+          <a class="source-link" href="${s.url}" target="_blank" rel="noopener noreferrer">
+            ↗ ${label}
+          </a>`;
+      }).filter(Boolean).join('');
+      return items || `<span style="font-size:0.8rem;color:var(--text-muted)">No sources available</span>`;
+    }
+
+    function buildCardHTML(item, priceInfo) {
       const badgeClass = getBadgeClass(item.recommendation);
       const barColor = getBarColor(item.sentiment_score);
-      const sourceHTML = isValidUrl(item.source)
-        ? `<a class="source-link" href="${item.source}" target="_blank" rel="noopener noreferrer">↗ View Source</a>`
-        : `<span style="font-size:0.8rem;color:var(--text-muted)">${item.source || '—'}</span>`;
+      const sourcesHTML = buildSourcesHTML(item.sources);
+      const priceHTML = buildPriceHTML(priceInfo);
 
       return `
         <div class="card-header">
@@ -181,6 +228,7 @@
           </div>
           <span class="badge ${badgeClass}">${item.recommendation || 'N/A'}</span>
         </div>
+        ${priceHTML}
         <hr class="card-divider" />
         <div class="score-section">
           <div class="score-label-row">
@@ -198,11 +246,14 @@
           <button class="toggle-btn" onclick="toggleReason(this)">Show more</button>
         </div>
         <hr class="card-divider" />
-        ${sourceHTML}
+        <div class="sources-section">
+          <div class="reason-title">Sources</div>
+          <div class="sources-list">${sourcesHTML}</div>
+        </div>
       `;
     }
 
-    function buildSummaryHTML(sentiments) {
+    function buildSummaryHTML(sentiments, asOf, cached) {
       const items = sentiments.map(item => {
         const color = getBarColor(item.sentiment_score);
         return `
@@ -214,14 +265,37 @@
             </div>
           </a>`;
       }).join('');
+      const asOfHTML = formatAsOf(asOf);
+      // `cached` (from the API's "cached" field) is True only when every
+      // Polygon/scrape call this request needed was served from the backend's
+      // in-memory cache — a static dot + "Cached" label reflects that no live
+      // fetch happened, vs. the pulsing dot for a request that did real work.
+      const pillClass = cached ? 'summary-as-of cached' : 'summary-as-of';
+      const pillText = cached ? `Cached · As of ${asOfHTML}` : `As of ${asOfHTML}`;
       return `
         <div class="summary-strip">
-          <div class="summary-strip-label">${sentiments.length} stock${sentiments.length !== 1 ? 's' : ''} analyzed</div>
+          <div class="summary-strip-head">
+            <div class="summary-strip-label">${sentiments.length} stock${sentiments.length !== 1 ? 's' : ''} analyzed</div>
+            ${asOfHTML ? `<span class="${pillClass}"><span class="dot"></span>${pillText}</span>` : ''}
+          </div>
           <div class="summary-items">${items}</div>
         </div>`;
     }
 
-    function renderCards(sentiments, ticker) {
+    // Renders the backend's `as_of` (ISO 8601, UTC) in the viewer's local time,
+    // e.g. "Aug 19, 2026, 10:00 AM". Cached responses can share the same as_of
+    // as a recent prior request — that's expected, not a bug (see app.py).
+    function formatAsOf(asOf) {
+      if (!asOf) return '';
+      const d = new Date(asOf);
+      if (Number.isNaN(d.getTime())) return '';
+      return d.toLocaleString('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+    }
+
+    function renderCards(sentiments, ticker, asOf, cached, priceByTicker) {
       const results = document.getElementById('results');
       if (!sentiments || sentiments.length === 0) {
         results.innerHTML = `
@@ -232,7 +306,7 @@
       }
 
       const wrapper = document.createElement('div');
-      wrapper.innerHTML = buildSummaryHTML(sentiments);
+      wrapper.innerHTML = buildSummaryHTML(sentiments, asOf, cached);
 
       const grid = document.createElement('div');
       grid.className = 'results-grid';
@@ -242,7 +316,7 @@
         const card = document.createElement('article');
         card.className = 'card';
         card.id = `card-${item.ticker}`;
-        card.innerHTML = buildCardHTML(item);
+        card.innerHTML = buildCardHTML(item, priceByTicker && priceByTicker[item.ticker]);
         fragment.appendChild(card);
       });
       grid.appendChild(fragment);
@@ -315,8 +389,18 @@
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
-        const url = `${API_BASE}/sentiment/?tickers=${encodeURIComponent(tickers.join(','))}`;
-        const res = await fetch(url, { signal: controller.signal });
+        const tickerParam = encodeURIComponent(tickers.join(','));
+        const sentimentUrl = `${API_BASE}/sentiment/?tickers=${tickerParam}`;
+        const pricesUrl = `${API_BASE}/prices/?tickers=${tickerParam}`;
+
+        // Fetch sentiment and prices concurrently — they're independent calls,
+        // and prices are the same fast endpoint the Portfolio tab already uses.
+        // Prices fail soft: if that call errors/times out, cards just render
+        // without a price line rather than blocking on it (see fetchPricesSoft).
+        const [res, priceByTicker] = await Promise.all([
+          fetch(sentimentUrl, { signal: controller.signal }),
+          fetchPricesSoft(tickers),
+        ]);
         clearTimeout(timer);
 
         let data = null;
@@ -327,7 +411,7 @@
           return;
         }
 
-        renderCards(data.sentiments, tickers.join(', '));
+        renderCards(data.sentiments, tickers.join(', '), data.as_of, data.cached, priceByTicker);
       } catch (err) {
         clearTimeout(timer);
         if (err.name === 'AbortError') {
@@ -341,36 +425,44 @@
     }
 
     // ---------- Live prices ----------
-    // Fetch real previous-close prices from the backend /prices/ endpoint and
-    // patch them into PORTFOLIO, then re-render. Fails soft: if the API is down
-    // or a ticker has no data, that holding keeps its sample price (labeled as
-    // such) and the rest of the app is unaffected.
-    async function refreshPrices() {
-      const tickers = PORTFOLIO.map(h => h.ticker);
+    // Fetch previous-close prices from the backend /prices/ endpoint. Fails
+    // soft: returns {} on any error/timeout rather than throwing, so callers
+    // (Portfolio's refreshPrices, Recommendations' searchSentiment) can treat
+    // "no price data" as just an empty map instead of needing their own
+    // try/catch around every call site.
+    async function fetchPricesSoft(tickers) {
       const url = `${API_BASE}/prices/?tickers=${encodeURIComponent(tickers.join(','))}`;
-
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 20000);
       try {
         const res = await fetch(url, { signal: controller.signal });
         clearTimeout(timer);
-        if (!res.ok) return;  // keep sample prices on error
+        if (!res.ok) return {};
 
         const data = await res.json();
-        const byTicker = Object.fromEntries((data.prices || []).map(p => [p.ticker, p]));
-
-        PORTFOLIO.forEach(h => {
-          const p = byTicker[h.ticker];
-          if (p && typeof p.price === 'number') {
-            h.price = p.price;
-            h.priceIsLive = true;
-          }
-        });
-        renderPortfolio();
+        return Object.fromEntries((data.prices || []).map(p => [p.ticker, p]));
       } catch {
         clearTimeout(timer);
-        // Network/timeout: leave sample prices in place.
+        return {};
       }
+    }
+
+    // Fetch real previous-close prices and patch them into PORTFOLIO, then
+    // re-render. Fails soft: if the API is down or a ticker has no data, that
+    // holding keeps its sample price (labeled as such) and the rest of the
+    // app is unaffected.
+    async function refreshPrices() {
+      const tickers = PORTFOLIO.map(h => h.ticker);
+      const byTicker = await fetchPricesSoft(tickers);
+
+      PORTFOLIO.forEach(h => {
+        const p = byTicker[h.ticker];
+        if (p && typeof p.price === 'number') {
+          h.price = p.price;
+          h.priceIsLive = true;
+        }
+      });
+      renderPortfolio();
     }
 
     // ---- init ----

@@ -17,19 +17,48 @@ Both share the exact same JSON schema (_SENTIMENT_SCHEMA) and prompt, so the onl
 difference is the API mechanism used to enforce structure.
 """
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from openai import OpenAI
 
 import config
 from services import polygon_client, scraper_service
 
+# In-memory cache for scraped article text: article_url -> (fetched_at, text).
+# Kept here rather than in scraper_service so that module stays a pure
+# "fetch this URL" function with no caching concerns of its own. Per-process
+# only — see config.SCRAPE_CACHE_TTL_SECONDS for the expiry window.
+_scrape_cache = {}
+
+
+def _scrape_article_cached(url: str) -> tuple:
+    """scraper_service.scrape_article(), memoized by URL for a TTL.
+
+    Returns (text, was_cached). Two tickers whose news cites the same
+    article, or the same article scraped again shortly after, skip the
+    network fetch entirely on a hit.
+    """
+    cached = _scrape_cache.get(url)
+    if cached is not None:
+        fetched_at, text = cached
+        if time.monotonic() - fetched_at < config.SCRAPE_CACHE_TTL_SECONDS:
+            return text, True
+
+    text = scraper_service.scrape_article(url)
+    _scrape_cache[url] = (time.monotonic(), text)
+    return text, False
+
 # JSON schema for the structured response. Every property is required and
 # additionalProperties is false, as mandated by OpenAI structured outputs.
 #
-# Note there is no "recommendation" field here: the model only judges sentiment
-# and explains why. The recommendation label is derived deterministically from
-# sentiment_score in _recommendation_for_score() below, so the label and the
-# score can never disagree with each other.
+# Note there is no "recommendation" or "sources" field here: the model only
+# judges sentiment and explains why, in more depth than a one-liner. The
+# recommendation label is derived deterministically from sentiment_score in
+# _recommendation_for_score() below, and the sources list is built directly
+# from news_by_ticker's real Polygon article data in analyse_watchlist() — the
+# model is never trusted to invent or recall URLs/titles it was only shown as
+# part of a large prompt.
 _SENTIMENT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -41,10 +70,17 @@ _SENTIMENT_SCHEMA = {
                     "ticker": {"type": "string", "description": "Symbol used to represent the stock"},
                     "stock_name": {"type": "string", "description": "Full name of the stock"},
                     "sentiment_score": {"type": "integer", "description": "Score between 1-100 of the sentiment"},
-                    "reason": {"type": "string", "description": "Reason for the sentiment_score"},
-                    "source": {"type": "string", "description": "Source or web URL for the reason and sentiment_score"},
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "A detailed, multi-sentence explanation (3-5 sentences) of the "
+                            "sentiment_score, grounded in specifics from the provided news: "
+                            "name the concrete events, numbers, or developments driving the "
+                            "score, not just a one-line summary."
+                        ),
+                    },
                 },
-                "required": ["ticker", "stock_name", "sentiment_score", "reason", "source"],
+                "required": ["ticker", "stock_name", "sentiment_score", "reason"],
                 "additionalProperties": False,
             },
         }
@@ -53,12 +89,17 @@ _SENTIMENT_SCHEMA = {
     "additionalProperties": False,
 }
 
-# Ordered high-to-low: first matching (min_score) threshold wins.
+# Ordered high-to-low: first matching (min_score) threshold wins. Symmetric
+# around 50 (Neutral) — see getBarColor/getBadgeClass in frontend/js/app.js,
+# which must stay in sync with these same seven bands.
 _RECOMMENDATION_THRESHOLDS = [
-    (86, "Strongly Bullish"),
-    (66, "Bullish"),
-    (26, "Neutral"),
-    (0,  "Bearish"),
+    (90, "Strongly Bullish"),
+    (75, "Bullish"),
+    (60, "Slightly Bullish"),
+    (41, "Neutral"),
+    (26, "Slightly Bearish"),
+    (11, "Bearish"),
+    (0,  "Strongly Bearish"),
 ]
 
 
@@ -75,24 +116,53 @@ def _recommendation_for_score(sentiment_score) -> str:
     for min_score, label in _RECOMMENDATION_THRESHOLDS:
         if score >= min_score:
             return label
-    return "Bearish"
+    return "Strongly Bearish"
 
 
-def _enrich_with_full_text(articles: list) -> list:
-    """Attach scraped full article text to each article, when enabled.
+def _scrape_all_articles(news_by_ticker: dict) -> bool:
+    """Attach scraped full article text to articles, across ALL tickers at once.
 
-    Only the first config.SCRAPE_ARTICLES_PER_TICKER articles are scraped (it is
-    slow), and scraping failures are silently ignored — the model still gets the
-    Polygon title/description for those. Returns the same list, mutated in place.
+    Only the first config.SCRAPE_ARTICLES_PER_TICKER articles per ticker are
+    scraped (it is slow). Mutates the article dicts in news_by_ticker in place.
+    Returns True if every scrape job was served from cache (or there were no
+    jobs at all), False if at least one required a live fetch.
+
+    Scraping is dispatched through a ThreadPoolExecutor rather than asyncio:
+    scraper_service.scrape_article() calls newspaper3k/requests, both of which
+    are blocking (synchronous) I/O under the hood with no async-native API, so
+    there is no coroutine to await — threads are what actually let many of
+    these blocking downloads run concurrently. Every article across every
+    ticker is flattened into one job list first so the thread pool is shared
+    watchlist-wide, instead of paying the sequential cost once per ticker.
     """
     if not config.ENABLE_SCRAPING:
-        return articles
+        return True
 
-    for article in articles[: config.SCRAPE_ARTICLES_PER_TICKER]:
-        full_text = scraper_service.scrape_article(article.get("article_url"))
-        if full_text:
-            article["full_text"] = full_text
-    return articles
+    jobs = [
+        article
+        for articles in news_by_ticker.values()
+        for article in articles[: config.SCRAPE_ARTICLES_PER_TICKER]
+    ]
+    if not jobs:
+        return True
+
+    all_cached = True
+    with ThreadPoolExecutor(max_workers=config.SCRAPE_MAX_WORKERS) as executor:
+        future_to_article = {
+            executor.submit(_scrape_article_cached, article.get("article_url")): article
+            for article in jobs
+        }
+        # A single slow/failed article must never block or crash the others —
+        # scrape_article() already fails soft (returns None), and iterating via
+        # as_completed() means one hung future can't hold up results that are
+        # already done.
+        for future in as_completed(future_to_article):
+            full_text, was_cached = future.result()
+            if not was_cached:
+                all_cached = False
+            if full_text:
+                future_to_article[future]["full_text"] = full_text
+    return all_cached
 
 
 def _build_prompt(tickers: list, news_by_ticker: dict) -> str:
@@ -107,8 +177,9 @@ for other companies that merely appear in the news.
 
 For each ticker provide:
 - sentiment_score: an integer from 1 (very negative) to 100 (very positive)
-- reason: a short justification grounded in the provided news
-- source: the article/publisher the reasoning is based on
+- reason: a detailed, multi-sentence explanation (3-5 sentences). Name the
+  concrete events, figures, or developments from the news that drove the
+  score — not a generic one-line summary.
 
 Where an article includes a "full_text" field, prefer it over the shorter
 "description" when forming your judgement.
@@ -182,6 +253,28 @@ def _score_function_calling(client, tickers_with_news, news_by_ticker) -> list:
     return arguments.get("sentiments", [])
 
 
+def _sources_for_ticker(articles: list) -> list:
+    """Build a ticker's source list deterministically from Polygon's own data.
+
+    Only the first config.SCRAPE_ARTICLES_PER_TICKER articles are included —
+    the same ones _scrape_all_articles() actually fetched full text for, so
+    "sources" lines up with what the model was shown in most detail. Never
+    derived from the model's output: titles/URLs it wasn't given verbatim
+    could be wrong, so this reads straight from the Polygon articles instead.
+    """
+    sources = []
+    for article in articles[: config.SCRAPE_ARTICLES_PER_TICKER]:
+        url = article.get("article_url")
+        if not url:
+            continue
+        sources.append({
+            "title": article.get("title") or url,
+            "url": url,
+            "publisher": (article.get("publisher") or {}).get("name") or "",
+        })
+    return sources
+
+
 # Dispatch table: method name -> scoring function.
 _SCORERS = {
     "structured": _score_structured_outputs,
@@ -209,14 +302,25 @@ def analyse_watchlist(tickers: list, method: str = DEFAULT_METHOD) -> dict:
             seen.add(symbol)
             watchlist.append(symbol)
 
-    # 1. Fetch news per ticker.
+    # 1. Fetch news per ticker. Kept sequential — it's a fast, cheap call per
+    #    ticker, so parallelizing it isn't worth the added complexity.
     news_by_ticker = {}
     tickers_with_news = []
+    all_cached = True
     for symbol in watchlist:
-        articles = polygon_client.fetch_news_for_ticker(symbol)
+        articles, was_cached = polygon_client.fetch_news_for_ticker(symbol)
+        if not was_cached:
+            all_cached = False
         if articles:
-            news_by_ticker[symbol] = _enrich_with_full_text(articles)
+            news_by_ticker[symbol] = articles
             tickers_with_news.append(symbol)
+
+    # 1b. Scrape full article text for all tickers' articles concurrently, in
+    #     one shared thread pool, instead of one ticker (and one article) at a
+    #     time. This is the slow part of step 1, so it's where concurrency pays
+    #     off the most.
+    if not _scrape_all_articles(news_by_ticker):
+        all_cached = False
 
     # 2. Score the tickers that actually have news, in one model pass, using the
     #    selected mechanism (structured outputs or function calling).
@@ -229,6 +333,7 @@ def analyse_watchlist(tickers: list, method: str = DEFAULT_METHOD) -> dict:
             # 3. Filter: keep only tickers that are on the requested watchlist.
             if symbol in seen:
                 entry["recommendation"] = _recommendation_for_score(entry.get("sentiment_score"))
+                entry["sources"] = _sources_for_ticker(news_by_ticker.get(symbol) or [])
                 scored_by_ticker[symbol] = entry
 
     # 4. Return one row per requested ticker, in the original order.
@@ -243,9 +348,12 @@ def analyse_watchlist(tickers: list, method: str = DEFAULT_METHOD) -> dict:
                 "sentiment_score": 0,
                 "recommendation": "No Data",
                 "reason": "No recent news was found for this ticker.",
-                "source": "",
+                "sources": [],
             })
 
     # Echo which mechanism produced these results (handy for demos / blog).
     resolved_method = method if method in _SCORERS else DEFAULT_METHOD
-    return {"method": resolved_method, "sentiments": results}
+    # "cached" is True only if every underlying Polygon/scrape call this
+    # request needed was served from cache — a single live fetch marks the
+    # whole watchlist as fresh, since some of the data really was just fetched.
+    return {"method": resolved_method, "sentiments": results, "cached": all_cached}
