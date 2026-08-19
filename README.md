@@ -250,8 +250,13 @@ stock-sense-ai/
 │   ├── evals/                 Sentiment quality checks (schema, consistency, cross-method agreement)
 │   └── legacy/               Earlier prototypes, kept for reference only
 ├── venv/                     Python virtual environment
-└── README.md
+├── README.md
+└── LICENSE                   MIT
 ```
+
+## License
+
+[MIT](./LICENSE) — use it, fork it, learn from it.
 
 ---
 
