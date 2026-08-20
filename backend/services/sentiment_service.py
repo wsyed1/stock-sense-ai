@@ -254,16 +254,22 @@ def _score_function_calling(client, tickers_with_news, news_by_ticker) -> list:
 
 
 def _sources_for_ticker(articles: list) -> list:
-    """Build a ticker's source list deterministically from Polygon's own data.
+    """Build a ticker's source list deterministically from the fetched articles.
 
-    Only the first config.SCRAPE_ARTICLES_PER_TICKER articles are included —
-    the same ones _scrape_all_articles() actually fetched full text for, so
-    "sources" lines up with what the model was shown in most detail. Never
-    derived from the model's output: titles/URLs it wasn't given verbatim
-    could be wrong, so this reads straight from the Polygon articles instead.
+    Cites EVERY article included in the prompt, not just the ones scraped for
+    full text. Only the first config.SCRAPE_ARTICLES_PER_TICKER articles get
+    scraped, but all of them reach the model (the rest via title/description),
+    so the model can — and does — reason from an article that was never
+    scraped. Citing only the scraped subset produced results whose figures
+    traced back to an uncited article, which defeats the point of citing at
+    all.
+
+    `full_text` marks which sources the model saw in full versus by summary.
+    Never derived from the model's output: titles/URLs it wasn't given verbatim
+    could be wrong, so this reads straight from the fetched articles instead.
     """
     sources = []
-    for article in articles[: config.SCRAPE_ARTICLES_PER_TICKER]:
+    for article in articles:
         url = article.get("article_url")
         if not url:
             continue
@@ -271,6 +277,7 @@ def _sources_for_ticker(articles: list) -> list:
             "title": article.get("title") or url,
             "url": url,
             "publisher": (article.get("publisher") or {}).get("name") or "",
+            "full_text": bool(article.get("full_text")),
         })
     return sources
 

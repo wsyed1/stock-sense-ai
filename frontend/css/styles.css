@@ -436,6 +436,18 @@
     .toggle-btn:hover { text-decoration: underline; }
 
     .sources-list { display: flex; flex-direction: column; gap: 8px; }
+    .sources-more { display: flex; flex-direction: column; gap: 8px; }
+    .source-depth {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      background: var(--primary-soft);
+      color: var(--text-muted);
+      font-size: 0.68rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
     .source-link {
       font-size: 0.8rem;
       color: var(--primary);
