@@ -196,6 +196,10 @@ GROUNDING RULES — these are strict:
    that are not in the text below is a failure.
 4. Prefer quoting the article's own framing over paraphrasing it into a
    claim the article did not make.
+5. Attach every figure to the exact subject the article attaches it to.
+   If the text says "Azure revenue surpassed $100 billion", do not restate
+   that as Azure Quantum, or as the company overall — a real number on the
+   wrong subject is as wrong as an invented one.
 
 News data by ticker (JSON):
 {json.dumps(news_by_ticker)}
