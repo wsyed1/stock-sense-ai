@@ -196,20 +196,48 @@
       return div.innerHTML;
     }
 
+    // Every article sent to the model is cited, which can run to five or more
+    // per ticker. One shows by default; the rest collapse behind a toggle so
+    // cards stay compact without hiding where a score came from.
+    const SOURCES_SHOWN_BY_DEFAULT = 1;
+
     function buildSourcesHTML(sources) {
-      if (!sources || sources.length === 0) {
+      const valid = (sources || []).filter(s => isValidUrl(s.url));
+      if (valid.length === 0) {
         return `<span style="font-size:0.8rem;color:var(--text-muted)">No sources available</span>`;
       }
-      const items = sources.map(s => {
-        if (!isValidUrl(s.url)) return '';
+
+      const link = s => {
         const label = s.publisher ? `${escapeHTML(s.title)} — ${escapeHTML(s.publisher)}` : escapeHTML(s.title);
+        // full_text marks articles the scraper read in full, vs. those the
+        // model saw only as a headline and short description.
+        const depth = s.full_text
+          ? '<span class="source-depth" title="Full article text was read">full text</span>'
+          : '';
         return `
           <a class="source-link" href="${s.url}" target="_blank" rel="noopener noreferrer">
-            ↗ ${label}
+            ↗ <span>${label}${depth}</span>
           </a>`;
-      }).filter(Boolean).join('');
-      return items || `<span style="font-size:0.8rem;color:var(--text-muted)">No sources available</span>`;
+      };
+
+      const shown = valid.slice(0, SOURCES_SHOWN_BY_DEFAULT).map(link).join('');
+      const hidden = valid.slice(SOURCES_SHOWN_BY_DEFAULT);
+      if (hidden.length === 0) return shown;
+
+      const total = valid.length;
+      return `${shown}
+        <div class="sources-more" hidden>${hidden.map(link).join('')}</div>
+        <button class="toggle-btn" data-total="${total}" onclick="toggleSources(this)">Show all ${total} sources</button>`;
     }
+
+    window.toggleSources = function(btn) {
+      const more = btn.previousElementSibling;
+      const expanded = more.hidden;
+      more.hidden = !expanded;
+      btn.textContent = expanded
+        ? 'Show fewer sources'
+        : `Show all ${btn.dataset.total} sources`;
+    };
 
     function buildCardHTML(item, priceInfo) {
       const badgeClass = getBadgeClass(item.recommendation);

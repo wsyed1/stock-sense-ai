@@ -373,6 +373,10 @@
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
       gap: 20px;
+      /* Cards size to their own content. Without this, grid items stretch to
+         the tallest in the row, so expanding one card's sources leaves the
+         others with a large empty gap below their content. */
+      align-items: start;
     }
     .card {
       background: var(--surface);
@@ -436,6 +440,21 @@
     .toggle-btn:hover { text-decoration: underline; }
 
     .sources-list { display: flex; flex-direction: column; gap: 8px; }
+    .sources-more { display: flex; flex-direction: column; gap: 8px; }
+    /* An explicit display value beats the [hidden] attribute's default
+       display:none, so re-assert it or the collapse silently does nothing. */
+    .sources-more[hidden] { display: none; }
+    .source-depth {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      background: var(--primary-soft);
+      color: var(--text-muted);
+      font-size: 0.68rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
     .source-link {
       font-size: 0.8rem;
       color: var(--primary);

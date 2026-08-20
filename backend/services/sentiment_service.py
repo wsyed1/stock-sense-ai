@@ -17,6 +17,7 @@ Both share the exact same JSON schema (_SENTIMENT_SCHEMA) and prompt, so the onl
 difference is the API mechanism used to enforce structure.
 """
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -184,6 +185,22 @@ For each ticker provide:
 Where an article includes a "full_text" field, prefer it over the shorter
 "description" when forming your judgement.
 
+GROUNDING RULES — these are strict:
+1. Use ONLY the news data below. Do not add facts, figures, or context from
+   your own knowledge of these companies, however confident you are in them.
+2. Every number you state (revenue, growth rate, EPS, valuation, dates) must
+   appear verbatim in the provided text. Copy it exactly — do not round,
+   convert, restate, or infer it.
+3. If the provided news is thin, say so and score accordingly. A short
+   rationale citing two real figures is correct; a fuller one citing figures
+   that are not in the text below is a failure.
+4. Prefer quoting the article's own framing over paraphrasing it into a
+   claim the article did not make.
+5. Attach every figure to the exact subject the article attaches it to.
+   If the text says "Azure revenue surpassed $100 billion", do not restate
+   that as Azure Quantum, or as the company overall — a real number on the
+   wrong subject is as wrong as an invented one.
+
 News data by ticker (JSON):
 {json.dumps(news_by_ticker)}
 """.strip()
@@ -253,17 +270,125 @@ def _score_function_calling(client, tickers_with_news, news_by_ticker) -> list:
     return arguments.get("sentiments", [])
 
 
-def _sources_for_ticker(articles: list) -> list:
-    """Build a ticker's source list deterministically from Polygon's own data.
+# Figures a rationale might cite: money, percentages, scaled amounts.
+_FIGURE_RE = re.compile(r"\$?\d[\d,]*\.?\d*\s*(?:%|billion|million|trillion)?", re.IGNORECASE)
 
-    Only the first config.SCRAPE_ARTICLES_PER_TICKER articles are included —
-    the same ones _scrape_all_articles() actually fetched full text for, so
-    "sources" lines up with what the model was shown in most detail. Never
-    derived from the model's output: titles/URLs it wasn't given verbatim
-    could be wrong, so this reads straight from the Polygon articles instead.
+# Values too generic to trace, and too common to be worth flagging: single and
+# double digits, 100 (the score ceiling), and four-digit years.
+_GENERIC_FIGURE_RE = re.compile(r"^(?:\d{1,2}|100|19\d\d|20\d\d)$")
+
+
+def _figure_key(figure: str) -> str:
+    """Reduce a cited figure to bare digits for corpus matching.
+
+    '$19.6 billion', '19.6%', and '19.6' all reduce to '19.6', so a figure
+    written one way in the article and another in the rationale still matches.
+    """
+    core = figure.strip().rstrip("%").replace("$", "").replace(",", "")
+    core = re.sub(r"\s*(billion|million|trillion)\s*$", "", core, flags=re.IGNORECASE)
+    return core.strip()
+
+
+def _ungrounded_figures(reason: str, articles: list) -> list:
+    """Return figures in `reason` that appear nowhere in the source articles.
+
+    The model is told to use only the provided text, but instructions alone
+    don't guarantee it — measured rates of untraceable figures stayed non-zero
+    even with explicit grounding rules in the prompt. This checks rather than
+    trusts: every number in the rationale must be present in the corpus the
+    model was actually given.
+    """
+    corpus = " ".join(
+        f"{a.get('title') or ''} {a.get('description') or ''} {a.get('full_text') or ''}"
+        for a in articles
+    )
+    corpus = re.sub(r"\s+", " ", corpus.lower())
+    # Normalise percent forms so "43 %" and "43 percent" both match "43%".
+    corpus = re.sub(r"(\d)\s*(?:%|percent)", r"\1%", corpus)
+
+    ungrounded = []
+    for raw in _FIGURE_RE.findall(reason or ""):
+        token = raw.strip()
+        key = _figure_key(token)
+        if not key:
+            continue
+        # A bare small integer ("three of five") is untraceable and not worth
+        # flagging — but the same digits carrying a unit are a real claim, so
+        # "41%" and "$41 billion" must still be checked.
+        has_unit = "%" in token or "$" in token or re.search(
+            r"(billion|million|trillion)", token, re.IGNORECASE
+        )
+        if not has_unit and _GENERIC_FIGURE_RE.match(key):
+            continue
+        # Match with the unit attached, not the bare digits. "43%" must not be
+        # satisfied by "$43 billion", and "$100 billion" must not be satisfied
+        # by a stray "100" — the scale word is part of the claim.
+        scale = re.search(r"(billion|million|trillion)", token, re.IGNORECASE)
+        if "%" in token:
+            needle = rf"{re.escape(key)}\s*%"
+        elif scale:
+            needle = rf"{re.escape(key)}\s*{scale.group(1).lower()}"
+        else:
+            needle = re.escape(key)
+        # Require a digit boundary, or "43%" matches "2.43%" — a different
+        # number entirely, often an unrelated ticker's price change.
+        if not re.search(r"(?<![\d.])" + needle, corpus):
+            ungrounded.append(token)
+    return sorted(set(ungrounded))
+
+
+def _strip_ungrounded_sentences(reason: str, articles: list) -> tuple:
+    """Drop sentences citing figures absent from the source articles.
+
+    Returns (cleaned_reason, dropped_sentences). Sentence-level rather than
+    all-or-nothing: a rationale is usually mostly grounded with one invented
+    figure, so removing that sentence keeps the useful analysis and discards
+    only the unsupported claim. What reaches the UI is then traceable by
+    construction, not by trusting the model to have followed instructions.
+    """
+    if not reason:
+        return reason, []
+
+    ungrounded = _ungrounded_figures(reason, articles)
+    if not ungrounded:
+        return reason, []
+
+    # Split on sentence boundaries only — a period followed by whitespace and
+    # a capital letter (or end of string). A naive [.!?] split also breaks
+    # decimals, turning "$4.74 EPS" into "$4." and "74 EPS".
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z(\"'])", reason.strip())
+    kept, dropped = [], []
+    for sentence in sentences:
+        if any(fig in sentence for fig in ungrounded):
+            dropped.append(sentence.strip())
+        else:
+            kept.append(sentence.strip())
+
+    cleaned = " ".join(s for s in kept if s).strip()
+    # Never return an empty rationale — if every sentence was unsupported,
+    # the score itself is suspect and the caller should see that plainly.
+    if not cleaned:
+        return "Recent coverage was too thin to support a specific rationale.", dropped
+    return cleaned, dropped
+
+
+def _sources_for_ticker(articles: list) -> list:
+    """Build a ticker's source list deterministically from the fetched articles.
+
+    Cites EVERY article included in the prompt, not just the ones scraped for
+    full text. Only the first config.SCRAPE_ARTICLES_PER_TICKER articles get
+    scraped, but all of them reach the model (the rest via title/description),
+    so the model can — and does — reason from an article that was never
+    scraped. Citing only the scraped subset produced results whose figures
+    traced back to an uncited article, which defeats the point of citing at
+    all.
+
+    `full_text` marks which sources the model saw in full versus by summary.
+    Never derived from the model's output: titles/URLs it wasn't given verbatim
+    could be wrong, so this reads straight from the fetched articles instead.
     """
     sources = []
-    for article in articles[: config.SCRAPE_ARTICLES_PER_TICKER]:
+    for article in articles:
         url = article.get("article_url")
         if not url:
             continue
@@ -271,6 +396,7 @@ def _sources_for_ticker(articles: list) -> list:
             "title": article.get("title") or url,
             "url": url,
             "publisher": (article.get("publisher") or {}).get("name") or "",
+            "full_text": bool(article.get("full_text")),
         })
     return sources
 
@@ -333,7 +459,18 @@ def analyse_watchlist(tickers: list, method: str = DEFAULT_METHOD) -> dict:
             # 3. Filter: keep only tickers that are on the requested watchlist.
             if symbol in seen:
                 entry["recommendation"] = _recommendation_for_score(entry.get("sentiment_score"))
-                entry["sources"] = _sources_for_ticker(news_by_ticker.get(symbol) or [])
+                articles = news_by_ticker.get(symbol) or []
+                entry["sources"] = _sources_for_ticker(articles)
+                # 3b. Verify the rationale against the source text and strip any
+                #     sentence citing a figure the articles never contained.
+                entry["reason"], dropped = _strip_ungrounded_sentences(
+                    entry.get("reason") or "", articles
+                )
+                if dropped:
+                    entry["grounding_note"] = (
+                        f"{len(dropped)} statement(s) removed: cited figures not "
+                        f"found in the source articles."
+                    )
                 scored_by_ticker[symbol] = entry
 
     # 4. Return one row per requested ticker, in the original order.
