@@ -373,6 +373,10 @@
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
       gap: 20px;
+      /* Cards size to their own content. Without this, grid items stretch to
+         the tallest in the row, so expanding one card's sources leaves the
+         others with a large empty gap below their content. */
+      align-items: start;
     }
     .card {
       background: var(--surface);

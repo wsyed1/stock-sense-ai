@@ -184,6 +184,18 @@ For each ticker provide:
 Where an article includes a "full_text" field, prefer it over the shorter
 "description" when forming your judgement.
 
+GROUNDING RULES — these are strict:
+1. Use ONLY the news data below. Do not add facts, figures, or context from
+   your own knowledge of these companies, however confident you are in them.
+2. Every number you state (revenue, growth rate, EPS, valuation, dates) must
+   appear verbatim in the provided text. Copy it exactly — do not round,
+   convert, restate, or infer it.
+3. If the provided news is thin, say so and score accordingly. A short
+   rationale citing two real figures is correct; a fuller one citing figures
+   that are not in the text below is a failure.
+4. Prefer quoting the article's own framing over paraphrasing it into a
+   claim the article did not make.
+
 News data by ticker (JSON):
 {json.dumps(news_by_ticker)}
 """.strip()
