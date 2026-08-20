@@ -17,6 +17,7 @@ Both share the exact same JSON schema (_SENTIMENT_SCHEMA) and prompt, so the onl
 difference is the API mechanism used to enforce structure.
 """
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -265,6 +266,83 @@ def _score_function_calling(client, tickers_with_news, news_by_ticker) -> list:
     return arguments.get("sentiments", [])
 
 
+# Figures a rationale might cite: money, percentages, scaled amounts.
+_FIGURE_RE = re.compile(r"\$?\d[\d,]*\.?\d*\s*(?:%|billion|million|trillion)?", re.IGNORECASE)
+
+# Values too generic to trace, and too common to be worth flagging: single and
+# double digits, 100 (the score ceiling), and four-digit years.
+_GENERIC_FIGURE_RE = re.compile(r"^(?:\d{1,2}|100|19\d\d|20\d\d)$")
+
+
+def _figure_key(figure: str) -> str:
+    """Reduce a cited figure to bare digits for corpus matching.
+
+    '$19.6 billion', '19.6%', and '19.6' all reduce to '19.6', so a figure
+    written one way in the article and another in the rationale still matches.
+    """
+    core = figure.strip().rstrip("%").replace("$", "").replace(",", "")
+    core = re.sub(r"\s*(billion|million|trillion)\s*$", "", core, flags=re.IGNORECASE)
+    return core.strip()
+
+
+def _ungrounded_figures(reason: str, articles: list) -> list:
+    """Return figures in `reason` that appear nowhere in the source articles.
+
+    The model is told to use only the provided text, but instructions alone
+    don't guarantee it — measured rates of untraceable figures stayed non-zero
+    even with explicit grounding rules in the prompt. This checks rather than
+    trusts: every number in the rationale must be present in the corpus the
+    model was actually given.
+    """
+    corpus = " ".join(
+        f"{a.get('title') or ''} {a.get('description') or ''} {a.get('full_text') or ''}"
+        for a in articles
+    )
+    corpus = re.sub(r"\s+", " ", corpus.lower())
+
+    ungrounded = []
+    for raw in _FIGURE_RE.findall(reason or ""):
+        key = _figure_key(raw)
+        if not key or _GENERIC_FIGURE_RE.match(key):
+            continue
+        if key not in corpus:
+            ungrounded.append(raw.strip())
+    return sorted(set(ungrounded))
+
+
+def _strip_ungrounded_sentences(reason: str, articles: list) -> tuple:
+    """Drop sentences citing figures absent from the source articles.
+
+    Returns (cleaned_reason, dropped_sentences). Sentence-level rather than
+    all-or-nothing: a rationale is usually mostly grounded with one invented
+    figure, so removing that sentence keeps the useful analysis and discards
+    only the unsupported claim. What reaches the UI is then traceable by
+    construction, not by trusting the model to have followed instructions.
+    """
+    if not reason:
+        return reason, []
+
+    ungrounded = _ungrounded_figures(reason, articles)
+    if not ungrounded:
+        return reason, []
+
+    # Split on sentence boundaries, keeping the delimiter with each sentence.
+    sentences = re.findall(r"[^.!?]+[.!?]*", reason)
+    kept, dropped = [], []
+    for sentence in sentences:
+        if any(fig in sentence for fig in ungrounded):
+            dropped.append(sentence.strip())
+        else:
+            kept.append(sentence.strip())
+
+    cleaned = " ".join(s for s in kept if s).strip()
+    # Never return an empty rationale — if every sentence was unsupported,
+    # the score itself is suspect and the caller should see that plainly.
+    if not cleaned:
+        return "Recent coverage was too thin to support a specific rationale.", dropped
+    return cleaned, dropped
+
+
 def _sources_for_ticker(articles: list) -> list:
     """Build a ticker's source list deterministically from the fetched articles.
 
@@ -352,7 +430,18 @@ def analyse_watchlist(tickers: list, method: str = DEFAULT_METHOD) -> dict:
             # 3. Filter: keep only tickers that are on the requested watchlist.
             if symbol in seen:
                 entry["recommendation"] = _recommendation_for_score(entry.get("sentiment_score"))
-                entry["sources"] = _sources_for_ticker(news_by_ticker.get(symbol) or [])
+                articles = news_by_ticker.get(symbol) or []
+                entry["sources"] = _sources_for_ticker(articles)
+                # 3b. Verify the rationale against the source text and strip any
+                #     sentence citing a figure the articles never contained.
+                entry["reason"], dropped = _strip_ungrounded_sentences(
+                    entry.get("reason") or "", articles
+                )
+                if dropped:
+                    entry["grounding_note"] = (
+                        f"{len(dropped)} statement(s) removed: cited figures not "
+                        f"found in the source articles."
+                    )
                 scored_by_ticker[symbol] = entry
 
     # 4. Return one row per requested ticker, in the original order.
