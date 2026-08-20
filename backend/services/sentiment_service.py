@@ -299,14 +299,37 @@ def _ungrounded_figures(reason: str, articles: list) -> list:
         for a in articles
     )
     corpus = re.sub(r"\s+", " ", corpus.lower())
+    # Normalise percent forms so "43 %" and "43 percent" both match "43%".
+    corpus = re.sub(r"(\d)\s*(?:%|percent)", r"\1%", corpus)
 
     ungrounded = []
     for raw in _FIGURE_RE.findall(reason or ""):
-        key = _figure_key(raw)
-        if not key or _GENERIC_FIGURE_RE.match(key):
+        token = raw.strip()
+        key = _figure_key(token)
+        if not key:
             continue
-        if key not in corpus:
-            ungrounded.append(raw.strip())
+        # A bare small integer ("three of five") is untraceable and not worth
+        # flagging — but the same digits carrying a unit are a real claim, so
+        # "41%" and "$41 billion" must still be checked.
+        has_unit = "%" in token or "$" in token or re.search(
+            r"(billion|million|trillion)", token, re.IGNORECASE
+        )
+        if not has_unit and _GENERIC_FIGURE_RE.match(key):
+            continue
+        # Match with the unit attached, not the bare digits. "43%" must not be
+        # satisfied by "$43 billion", and "$100 billion" must not be satisfied
+        # by a stray "100" — the scale word is part of the claim.
+        scale = re.search(r"(billion|million|trillion)", token, re.IGNORECASE)
+        if "%" in token:
+            needle = rf"{re.escape(key)}\s*%"
+        elif scale:
+            needle = rf"{re.escape(key)}\s*{scale.group(1).lower()}"
+        else:
+            needle = re.escape(key)
+        # Require a digit boundary, or "43%" matches "2.43%" — a different
+        # number entirely, often an unrelated ticker's price change.
+        if not re.search(r"(?<![\d.])" + needle, corpus):
+            ungrounded.append(token)
     return sorted(set(ungrounded))
 
 
@@ -326,8 +349,10 @@ def _strip_ungrounded_sentences(reason: str, articles: list) -> tuple:
     if not ungrounded:
         return reason, []
 
-    # Split on sentence boundaries, keeping the delimiter with each sentence.
-    sentences = re.findall(r"[^.!?]+[.!?]*", reason)
+    # Split on sentence boundaries only — a period followed by whitespace and
+    # a capital letter (or end of string). A naive [.!?] split also breaks
+    # decimals, turning "$4.74 EPS" into "$4." and "74 EPS".
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z(\"'])", reason.strip())
     kept, dropped = [], []
     for sentence in sentences:
         if any(fig in sentence for fig in ungrounded):

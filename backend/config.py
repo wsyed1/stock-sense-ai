@@ -82,7 +82,7 @@ ENABLE_SCRAPING = os.getenv("enable_scraping", "true").lower() not in ("0", "fal
 
 # How many articles per ticker to scrape when scraping is enabled (scraping is
 # the slow part, so keep this small).
-SCRAPE_ARTICLES_PER_TICKER = int(os.getenv("scrape_articles_per_ticker", "2"))
+SCRAPE_ARTICLES_PER_TICKER = int(os.getenv("scrape_articles_per_ticker", "5"))
 
 # Max concurrent worker threads used to scrape articles in parallel (see
 # sentiment_service._scrape_all_articles). Scraping is I/O-bound (blocking HTTP
