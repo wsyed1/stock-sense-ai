@@ -197,9 +197,9 @@
     }
 
     // Every article sent to the model is cited, which can run to five or more
-    // per ticker. The first two show by default; the rest collapse behind a
-    // toggle so cards stay scannable without hiding where a score came from.
-    const SOURCES_SHOWN_BY_DEFAULT = 2;
+    // per ticker. One shows by default; the rest collapse behind a toggle so
+    // cards stay compact without hiding where a score came from.
+    const SOURCES_SHOWN_BY_DEFAULT = 1;
 
     function buildSourcesHTML(sources) {
       const valid = (sources || []).filter(s => isValidUrl(s.url));
@@ -224,19 +224,19 @@
       const hidden = valid.slice(SOURCES_SHOWN_BY_DEFAULT);
       if (hidden.length === 0) return shown;
 
+      const total = valid.length;
       return `${shown}
         <div class="sources-more" hidden>${hidden.map(link).join('')}</div>
-        <button class="toggle-btn" onclick="toggleSources(this)">Show ${hidden.length} more source${hidden.length !== 1 ? 's' : ''}</button>`;
+        <button class="toggle-btn" data-total="${total}" onclick="toggleSources(this)">Show all ${total} sources</button>`;
     }
 
     window.toggleSources = function(btn) {
       const more = btn.previousElementSibling;
-      const count = more.children.length;
-      const showing = more.hidden;
-      more.hidden = !showing;
-      btn.textContent = showing
+      const expanded = more.hidden;
+      more.hidden = !expanded;
+      btn.textContent = expanded
         ? 'Show fewer sources'
-        : `Show ${count} more source${count !== 1 ? 's' : ''}`;
+        : `Show all ${btn.dataset.total} sources`;
     };
 
     function buildCardHTML(item, priceInfo) {

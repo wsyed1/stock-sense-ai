@@ -437,6 +437,9 @@
 
     .sources-list { display: flex; flex-direction: column; gap: 8px; }
     .sources-more { display: flex; flex-direction: column; gap: 8px; }
+    /* An explicit display value beats the [hidden] attribute's default
+       display:none, so re-assert it or the collapse silently does nothing. */
+    .sources-more[hidden] { display: none; }
     .source-depth {
       display: inline-block;
       margin-left: 6px;
